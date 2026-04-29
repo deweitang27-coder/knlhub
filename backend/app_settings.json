@@ -1,0 +1,12 @@
+{
+  "embedding_api_key": "sk-acaf427f09a64151bc5730c628464114",
+  "llm_api_key": "sk-73e9ec6a671442a1a1c18c70138d9ee1",
+  "embedding_provider": "tongyi",
+  "llm_provider": "deepseek",
+  "embedding_model": "text-embedding-v3",
+  "llm_model": "deepseek-chat",
+  "chunk_size": 512,
+  "chunk_overlap": 64,
+  "top_k": 5,
+  "max_file_size_mb": 51
+}
