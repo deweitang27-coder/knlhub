@@ -29,76 +29,71 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-in-productio
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 60 * 24 * 7
 
-SETTINGS_FILE = os.path.join(project_root, "backend", "app_settings.json")
+ALLOWED_FILE_TYPES = [".pdf", ".docx", ".doc", ".txt", ".md", ".csv", ".xlsx", ".pptx"]
 
-def _get_settings():
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+# ============ User-level settings cache ============
 
-_settings_cache = None
+# 内存缓存：user_id -> settings dict
+_user_settings_cache: dict = {}
 
-def get_runtime_settings():
-    global _settings_cache
-    if _settings_cache is None:
-        _settings_cache = _get_settings()
-    return _settings_cache
+def _set_cache(user_id: str, settings: dict):
+    _user_settings_cache[user_id] = settings
 
-def reload_settings():
-    global _settings_cache
-    _settings_cache = _get_settings()
-    return _settings_cache
+def set_user_settings(user_id: str, settings: dict):
+    """更新用户设置缓存（调用方负责持久化到数据库）"""
+    _set_cache(user_id, settings)
 
-def get_embedding_api_key():
-    s = get_runtime_settings()
-    return s.get("embedding_api_key", "") or os.getenv("EMBEDDING_API_KEY", "")
+def _get_settings(user_id: str) -> dict:
+    return _user_settings_cache.get(user_id, {})
 
-def get_llm_api_key():
-    s = get_runtime_settings()
-    return s.get("llm_api_key", "") or os.getenv("LLM_API_KEY", "")
+def _get_setting(user_id: str, key: str, default):
+    """从缓存或环境变量获取用户级设置"""
+    user_settings = _get_settings(user_id) if user_id else {}
+    val = user_settings.get(key)
+    if val is not None and val != "":
+        return val
+    return default
 
-def get_embedding_provider():
-    s = get_runtime_settings()
-    return s.get("embedding_provider", "") or os.getenv("EMBEDDING_PROVIDER", "tongyi")
+# ============ Config accessors ============
 
-def get_llm_provider():
-    s = get_runtime_settings()
-    return s.get("llm_provider", "") or os.getenv("LLM_PROVIDER", "deepseek")
+def get_embedding_api_key(user_id: str = None) -> str:
+    return _get_setting(user_id, "embedding_api_key", os.getenv("EMBEDDING_API_KEY", ""))
 
-def get_embedding_model():
-    s = get_runtime_settings()
-    return s.get("embedding_model", "") or os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
+def get_llm_api_key(user_id: str = None) -> str:
+    return _get_setting(user_id, "llm_api_key", os.getenv("LLM_API_KEY", ""))
 
-def get_llm_model():
-    s = get_runtime_settings()
-    return s.get("llm_model", "") or os.getenv("LLM_MODEL", "deepseek-chat")
+def get_embedding_provider(user_id: str = None) -> str:
+    return _get_setting(user_id, "embedding_provider", os.getenv("EMBEDDING_PROVIDER", "tongyi"))
 
-def get_embedding_base_url():
-    s = get_runtime_settings()
-    return os.getenv("EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+def get_llm_provider(user_id: str = None) -> str:
+    return _get_setting(user_id, "llm_provider", os.getenv("LLM_PROVIDER", "deepseek"))
 
-def get_llm_base_url():
-    s = get_runtime_settings()
-    return os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
+def get_embedding_model(user_id: str = None) -> str:
+    return _get_setting(user_id, "embedding_model", os.getenv("EMBEDDING_MODEL", "text-embedding-v3"))
 
-def get_chunk_size():
-    s = get_runtime_settings()
-    return int(s.get("chunk_size", os.getenv("CHUNK_SIZE", "512")))
+def get_llm_model(user_id: str = None) -> str:
+    return _get_setting(user_id, "llm_model", os.getenv("LLM_MODEL", "deepseek-chat"))
 
-def get_chunk_overlap():
-    s = get_runtime_settings()
-    return int(s.get("chunk_overlap", os.getenv("CHUNK_OVERLAP", "64")))
+def get_embedding_base_url(user_id: str = None) -> str:
+    return _get_setting(user_id, "embedding_base_url", os.getenv("EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"))
 
-def get_top_k():
-    s = get_runtime_settings()
-    return int(s.get("top_k", os.getenv("TOP_K", "5")))
+def get_llm_base_url(user_id: str = None) -> str:
+    return _get_setting(user_id, "llm_base_url", os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1"))
 
-def get_max_file_size():
-    s = get_runtime_settings()
-    mb = int(s.get("max_file_size_mb", os.getenv("MAX_FILE_SIZE", "52428800")))
+def get_chunk_size(user_id: str = None) -> int:
+    raw = _get_setting(user_id, "chunk_size", os.getenv("CHUNK_SIZE", "512"))
+    return int(raw)
+
+def get_chunk_overlap(user_id: str = None) -> int:
+    raw = _get_setting(user_id, "chunk_overlap", os.getenv("CHUNK_OVERLAP", "64"))
+    return int(raw)
+
+def get_top_k(user_id: str = None) -> int:
+    raw = _get_setting(user_id, "top_k", os.getenv("TOP_K", "5"))
+    return int(raw)
+
+def get_max_file_size(user_id: str = None) -> int:
+    mb = int(_get_setting(user_id, "max_file_size_mb", os.getenv("MAX_FILE_SIZE", "52428800")))
     if mb > 1000:
         return mb
     return mb * 1024 * 1024
-
-ALLOWED_FILE_TYPES = [".pdf", ".docx", ".doc", ".txt", ".md", ".csv", ".xlsx", ".pptx"]

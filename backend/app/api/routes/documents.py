@@ -2,6 +2,7 @@ import os
 import uuid
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from pydantic import BaseModel
@@ -12,9 +13,9 @@ from app.core.config import (
     get_chunk_overlap,
     get_max_file_size,
     ALLOWED_FILE_TYPES,
-    reload_settings,
+    set_user_settings,
 )
-from app.core.embeddings import get_embedding
+from app.core.embeddings import get_embeddings
 from app.core.vector_store import insert_embeddings, delete_document_chunks
 from app.models.models import User, Document, Chunk
 
@@ -29,6 +30,12 @@ class DocumentResponse(BaseModel):
     status: str
     created_at: str
     chunk_count: int
+
+class PreviewResponse(BaseModel):
+    filename: str
+    content_type: str
+    content: str
+    file_url: str
 
 def parse_text_from_file(file_path: str, filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
@@ -111,13 +118,12 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    reload_settings()
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_FILE_TYPES:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
 
     file_content = await file.read()
-    max_size = get_max_file_size()
+    max_size = get_max_file_size(current_user.id)
     if len(file_content) > max_size:
         raise HTTPException(status_code=400, detail=f"文件大小超过 {max_size // (1024*1024)}MB 限制")
 
@@ -141,19 +147,21 @@ async def upload_document(
 
     try:
         text = parse_text_from_file(file_path, file.filename)
-        chunk_size = get_chunk_size()
-        overlap = get_chunk_overlap()
+        chunk_size = get_chunk_size(current_user.id)
+        overlap = get_chunk_overlap(current_user.id)
         chunks = split_text(text, chunk_size, overlap)
 
         chunk_records = []
         for i, chunk_text in enumerate(chunks):
-            embedding = await get_embedding(chunk_text)
             chunk_records.append({
                 "doc_id": str(doc.id),
                 "content": chunk_text,
-                "embedding": embedding,
                 "chunk_index": i,
             })
+
+        embeddings = await get_embeddings([r["content"] for r in chunk_records], current_user.id)
+        for i, embedding in enumerate(embeddings):
+            chunk_records[i]["embedding"] = embedding
 
         await insert_embeddings(db, chunk_records)
 
@@ -227,3 +235,80 @@ async def delete_document(
             os.remove(file_path)
 
     return {"message": "文档已删除"}
+
+@router.get("/{doc_id}/preview", response_model=PreviewResponse)
+async def preview_document(
+    doc_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Document).where(Document.id == doc_id, Document.user_id == current_user.id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    file_path = os.path.join(UPLOAD_DIR, os.path.basename(doc.file_url))
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    ext = os.path.splitext(doc.filename)[1].lower()
+    file_url = doc.file_url
+
+    if ext == ".pdf":
+        return {
+            "filename": doc.filename,
+            "content_type": "pdf",
+            "content": "",
+            "file_url": file_url,
+        }
+
+    if ext in (".txt", ".md", ".csv"):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            content_type = "markdown" if ext == ".md" else "text"
+            return {
+                "filename": doc.filename,
+                "content_type": content_type,
+                "content": content,
+                "file_url": file_url,
+            }
+        except UnicodeDecodeError:
+            with open(file_path, "r", encoding="gbk") as f:
+                content = f.read()
+            return {
+                "filename": doc.filename,
+                "content_type": "text",
+                "content": content,
+                "file_url": file_url,
+            }
+
+    if ext in (".docx", ".doc"):
+        content = parse_text_from_file(file_path, doc.filename)
+        return {
+            "filename": doc.filename,
+            "content_type": "text",
+            "content": content,
+            "file_url": file_url,
+        }
+
+    if ext == ".xlsx":
+        content = parse_text_from_file(file_path, doc.filename)
+        return {
+            "filename": doc.filename,
+            "content_type": "text",
+            "content": content,
+            "file_url": file_url,
+        }
+
+    if ext == ".pptx":
+        return {
+            "filename": doc.filename,
+            "content_type": "unsupported",
+            "content": "暂不支持预览 PPTX 文件",
+            "file_url": file_url,
+        }
+
+    raise HTTPException(status_code=400, detail=f"不支持预览该文件类型: {ext}")
